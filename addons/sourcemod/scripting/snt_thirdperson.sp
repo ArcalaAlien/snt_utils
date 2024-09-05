@@ -1,10 +1,13 @@
+#define PREFIX "{greenyellow}[{grey}SNT{greenyellow}]{default}"
+
 #include <sourcemod>
 #include <sdktools>
+#include <morecolors>
 #include <tf2>
 
 bool IsEnabled[MAXPLAYERS + 1] = {false, ...};
 
-public Plugin MyInfo =
+public Plugin myinfo =
 {
     name = "SNT Third Person",
     author = "Arcala The Gyiyg",
@@ -24,8 +27,7 @@ public void OnPluginStart()
     RegConsoleCmd("sm_1",               ALL_ToggleTP, "[SNT] /thirdperson: Used to toggle between third / first person.");
 
     // Register all hooks
-    HookEvent("player_spawn", Event_OnPlayerSpawn);
-    HookEvent("player_class", Event_OnPlayerSpawn);
+    HookEvent("post_inventory_application", Event_OnPlayerSpawn);
 }
 
 public void OnPluginEnd()
@@ -53,11 +55,17 @@ public Action Event_OnPlayerSpawn(Handle event, char[] name, bool dontBroadcast)
     {
         if (IsEnabled[client])
         {
-            SetVariantInt(1);
-            AcceptEntityInput(client, "SetForcedTauntCam");
+            CreateTimer(0.5, Timer_ToggleTP, client);
         }
     }
     return Plugin_Handled;
+}
+
+public Action Timer_ToggleTP(Handle timer, any client)
+{
+    SetVariantInt(1);
+    AcceptEntityInput(client, "SetForcedTauntCam");
+    return Plugin_Continue;
 }
 
 public Action ALL_ToggleTP(int client, int args)
@@ -70,7 +78,7 @@ public Action ALL_ToggleTP(int client, int args)
 
     if (args > 0)
     {
-        ReplyToCommand(client, "[SNT] /tp or /fp: Use this to toggle between first and third person.");
+        CReplyToCommand(client, "%s /tp, /3, /thirdperson or /fp, /1, /firstperson: Use this to toggle between first and third person.", PREFIX);
         return Plugin_Handled;
     }
 
@@ -78,7 +86,7 @@ public Action ALL_ToggleTP(int client, int args)
     {
         if (IsEnabled[client])
         {
-            ReplyToCommand(client, "[SNT] Disabled Third Person");
+            CReplyToCommand(client, "%s Disabled Third Person", PREFIX);
             
             IsEnabled[client] = !IsEnabled[client];
             SetVariantInt(0);
@@ -87,7 +95,7 @@ public Action ALL_ToggleTP(int client, int args)
         }
         else
         {
-            ReplyToCommand(client, "[SNT] Enabled Third Person");
+            CReplyToCommand(client, "%s Enabled Third Person", PREFIX);
 
             IsEnabled[client] = !IsEnabled[client];
             SetVariantInt(1);
