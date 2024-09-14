@@ -37,8 +37,8 @@ public void OnClientDisconnect(int client)
         g_bIsEnabled[client] = true;
         if (g_hSpeedometerTimer[client] != INVALID_HANDLE)
         {
-            g_hSpeedometerTimer[client] = INVALID_HANDLE;
             KillTimer(g_hSpeedometerTimer[client]);
+            g_hSpeedometerTimer[client] = INVALID_HANDLE;
         }
         if (g_hMessageHandles[client] != INVALID_HANDLE)
         {

@@ -218,16 +218,16 @@ void ToggleSP()
         else
             SetConVarInt(isEnabledConVar, 1);
 
-        if (!isEnabled && notifyProtectionOff == INVALID_HANDLE)
-        {
-            notifyProtectionOff = CreateTimer(360.0, NotifySPDisabled_Timer, 0, TIMER_FLAG_NO_MAPCHANGE | TIMER_REPEAT);
-            return;        
-        }
-
         if (isSkurfMap && notifySkurfMap == INVALID_HANDLE)
         {
             notifySkurfMap = CreateTimer(360.0, NotifySkurfMap_Timer, 0, TIMER_FLAG_NO_MAPCHANGE | TIMER_REPEAT);
             return;
+        }
+
+        if (!isEnabled && notifyProtectionOff == INVALID_HANDLE)
+        {
+            notifyProtectionOff = CreateTimer(360.0, NotifySPDisabled_Timer, 0, TIMER_FLAG_NO_MAPCHANGE | TIMER_REPEAT);
+            return;        
         }
     }
 }
@@ -239,7 +239,7 @@ public Action AddUberToPlayer_Timer(Handle timer, any client)
         if (isSkurfMap)
             if (clientEnabled[client])
             {
-                SetEntityRenderColor(client, 255, 255, 255, 125);
+                SetEntityRenderColor(client, 155, 255, 155, 125);
                 TF2_AddCondition(client, TFCond_UberchargedHidden);
             }
             else
@@ -249,7 +249,7 @@ public Action AddUberToPlayer_Timer(Handle timer, any client)
             }
         else
         {
-            SetEntityRenderColor(client, 255, 255, 255, 125);
+            SetEntityRenderColor(client, 155, 255, 155, 125);
             TF2_AddCondition(client, TFCond_UberchargedHidden, 5.0);
             CreateTimer(5.0, RenderClientNormally_Timer, client);
         }
