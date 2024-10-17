@@ -14,27 +14,33 @@ char whURL[WEBHOOK_URL_MAX_SIZE];
 char whUser[MAX_NAME_LENGTH];
 char whAvatarURL[WEBHOOK_URL_MAX_SIZE];
 char whRoleId[48];
+char whThumbURL[WEBHOOK_URL_MAX_SIZE];
 int  emPingColor;
 int  emInfoColor;
-bool bIsEnabled;
+bool lateLoad;
 
 Handle notificationTimer = INVALID_HANDLE;
 
 ConVar cvMinNumPlayers;
-ConVar cvIsEnabled;
+
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
+{
+    lateLoad = late;
+    return APLRes_Success;
+}
 
 public void OnPluginStart()
 {
     cvMinNumPlayers = CreateConVar("snt_min_to_ping", "6", "Minimum numbers of players in server to ping @surfers", 0, true, 4.0, true, float(MaxClients));
-    cvIsEnabled = CreateConVar("snt_discord_enabled", "1", "Enable or disable the discord notification plugin.", 0, true, 0.0, true, 1.0);
-
-    HookConVarChange(cvIsEnabled, OnPluginToggled);
 
     LoadConfig();
-
-    RegAdminCmd("sm_testping", ADM_TestPing, ADMFLAG_ROOT, "Test discord ping");
-    RegAdminCmd("sm_testinfo", ADM_TestInfo, ADMFLAG_ROOT, "test discord info");
     RegAdminCmd("sm_sntd_loadconf", ADM_LoadConfig, ADMFLAG_ROOT, "refresh configs");
+
+    if (lateLoad)
+    {
+        OnClientConnected(0);
+        OnMapStart();
+    }
 }
 
 public void OnClientConnected(int client)
@@ -48,13 +54,23 @@ public void OnClientConnected(int client)
 
 public void OnMapStart()
 {
-    CreateTimer(1.0, sendServerInfo_Timer);
+    char currentMap[64];
+    GetCurrentMap(currentMap, sizeof(currentMap));
+    TrimString(currentMap);
+    // Set up thumbnail url for current map
+    Format(whThumbURL, sizeof(whThumbURL), "https://surfnturf.games/assets/images/thumbs/%s.png", currentMap);
+    PrintToServer("[SNT] Current Map: %s Looking for thumbnail @ %s", currentMap, whThumbURL);
+
+    HTTPRequest thumbReq = new HTTPRequest(whThumbURL);
+    thumbReq.Get(OnCheckForPng);
+
+    CreateTimer(5.0, sendServerInfo_Timer);
     if (notificationTimer == INVALID_HANDLE)
-        notificationTimer = CreateTimer(300.0, sendServerInfo_Timer, 0, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+        notificationTimer = CreateTimer(30.0, sendServerInfo_Timer, 0, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
     else
     {
         CloseHandle(notificationTimer);
-        notificationTimer = CreateTimer(300.0, sendServerInfo_Timer, 0, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE)
+        notificationTimer = CreateTimer(30.0, sendServerInfo_Timer, 0, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE)
     }
 }
 
@@ -64,6 +80,40 @@ public void OnMapEnd()
     {
         CloseHandle(notificationTimer);
         notificationTimer = INVALID_HANDLE;
+    }
+}
+
+public void OnCheckForPng(HTTPResponse res, any value, const char[] error)
+{
+    if (res.Status != HTTPStatus_OK)
+    {
+        char currentMap[64];
+        GetCurrentMap(currentMap, sizeof(currentMap));
+        TrimString(currentMap);
+        // Set up thumbnail url for current map
+        Format(whThumbURL, sizeof(whThumbURL), "https://surfnturf.games/assets/images/thumbs/%s.jpg", currentMap);
+        if (error[0] == '\0')
+            PrintToServer("[SNT] Unable to find PNG thumbnail (ERROR %i) Looking for thumbnail @ %s", res.Status, whThumbURL);
+        else
+            PrintToServer("[SNT] Unable to find PNG thumbnail (ERROR %i: %s) Looking for thumbnail @ %s", res.Status, error, whThumbURL);
+
+        HTTPRequest thumbReq = new HTTPRequest(whThumbURL);
+        thumbReq.Get(OnCheckForJpg);
+    }
+}
+
+public void OnCheckForJpg(HTTPResponse res, any value, const char[] error)
+{
+    if (res.Status != HTTPStatus_OK)
+    {
+        char currentMap[64];
+        GetCurrentMap(currentMap, sizeof(currentMap));
+        TrimString(currentMap);
+        if (error[0] == '\0')
+            PrintToServer("[SNT] Unable to find thumbnail for %s. Defaulting to placeholder. (ERROR %i)", currentMap, res.Status);
+        else
+            PrintToServer("[SNT] Unable to find thumbnail for %s. Defaulting to placeholder. (ERROR %i: %s)", currentMap, res.Status, error);
+        Format(whThumbURL, sizeof(whThumbURL), "https://surfnturf.games/assets/images/thumbs/notfound.png");
     }
 }
 
@@ -190,14 +240,7 @@ void sendServerInfo()
     else if (timeLeft < -1)
         Format(mapTimeLeft, sizeof(mapTimeLeft), "Server Idle");
 
-    // Set up thumbnail url for current map
-    char thumbURL[WEBHOOK_URL_MAX_SIZE];
-    Format(thumbURL, sizeof(thumbURL), "https://surfnturf.games/assets/thumbs/%s.png", currentMap);
-
-    // If thumbnail doesn't exist, set to placeholder thumbnail
-    if (!FileExists(thumbURL))
-        Format(thumbURL, sizeof(thumbURL), "https://surfnturf.games/assets/thumbs/notfound.png");
-    infoThumbnail.SetURL(thumbURL);
+    infoThumbnail.SetURL(whThumbURL);
 
     // Setting up the fields
     infoField1.SetValue(currentMap);
@@ -289,18 +332,6 @@ public Action sendServerInfo_Timer(Handle timer)
 {
     sendServerInfo();
     return Plugin_Continue;
-}
-
-public Action ADM_TestPing (int client, int args)
-{
-    sendDiscordPing();
-    return Plugin_Handled;
-}
-
-public Action ADM_TestInfo (int client, int args)
-{
-    sendServerInfo();
-    return Plugin_Handled;
 }
 
 public Action ADM_LoadConfig (int client, int args)

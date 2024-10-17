@@ -1,10 +1,16 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
+#include <clientprefs>
 #include <tf2>
-#include <sntdb_core>
+#include <tf2_stocks>
+#include <tf2items>
+
 #include <morecolors>
 #tryinclude <goomba>
+
+#undef REQUIRE_PLUGIN
+#include <sntdb/core>
 
 #define PREFIX "{greenyellow}[{grey}SNT{greenyellow}]{default}"
 
@@ -17,19 +23,29 @@ public Plugin myinfo =
     url = "https://github.com/ArcalaAlien/snt_utils"
 };
 
-bool isEnabled = false;
+bool isEnabled;
 bool clientEnabled[MAXPLAYERS + 1];
+bool isActive[MAXPLAYERS + 1];
 bool isSkurfMap;
 bool currentlyWeekend = false;
 
 ConVar isEnabledConVar;
-ConVar isSkillSurfConVar;
+ConVar mapTypeConVar;
+
+Handle spEnabledPref;
 
 Handle notifyProtectionOff = INVALID_HANDLE;
 Handle notifySkurfMap = INVALID_HANDLE;
-File skurfMapList;
 
 int collisionGroupOffset;
+
+bool lateLoad;
+
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
+{
+    lateLoad = late;
+    return APLRes_Success;
+}
 
 public void OnPluginStart()
 {
@@ -39,37 +55,33 @@ public void OnPluginStart()
     HookEvent("teamplay_round_win", OnRoundEnd);
 
     isEnabledConVar = CreateConVar("snt_sp_enabled", "1.0", "Enable / disable spawn protection", 0, true, 0.0, true, 1.0);
-    isSkillSurfConVar = CreateConVar("snt_sp_is_skurf", "0.0", "Change spawnprotection modes between skill-surf and combat surf.", 0, true, 0.0, true, 1.0);
+    mapTypeConVar = FindConVar("snt_map_type");
 
     HookConVarChange(isEnabledConVar, CVC_ToggleSpawnProtection); 
-    HookConVarChange(isSkillSurfConVar, CVC_SetAsSkurfMap);
+    HookConVarChange(mapTypeConVar, CVC_SetAsSkurfMap);
 
-    for (int i = 1; i < MaxClients; i++)
+    spEnabledPref = RegClientCookie("snt_sp_autoenable", "Whether spawn protection will be autoenabled for the player on a skill surf map.", CookieAccess_Public);
+
+    if (lateLoad)
     {
-        OnClientPutInServer(i);
+        for (int i = 1; i < MaxClients; i++)
+            OnClientPutInServer(i);
+        
+        OnMapStart();
     }
 
-    ToggleSP();
+
     RegConsoleCmd("sm_sp", USR_ToggleSP, "Usage: /sp (only on skill surf maps!)");
 }
 
 public void OnMapStart()
 {
-    char skurfFilePath[256];
-    Format(skurfFilePath, sizeof(skurfFilePath), "cfg/skurf_mapcycle.txt");
+    if (mapTypeConVar != null)
 
-    if (FileExists(skurfFilePath))
-        skurfMapList = OpenFile(skurfFilePath, "r");
-    else
-        ThrowError("[SNT_SpawnProtection]: cfg/skurf_mapcycle.txt doesn't exist!");
-
-    CheckIfSkurfMap();
-    delete skurfMapList;
-
-    if (isSkillSurfConVar.IntValue == 0)
-        isSkurfMap = false;
-    else
+    if (mapTypeConVar.IntValue == 1)
         isSkurfMap = true;
+    else
+        isSkurfMap = false;
 
     ToggleSP();
 }
@@ -91,8 +103,24 @@ public void OnMapEnd()
 
 public void OnClientPutInServer(int client)
 {
-    if (IsClientInGame(client) && IsClientConnected(client))
+    if (SNT_IsValidClient(client))
+    {
         SDKHook(client, SDKHook_OnTakeDamage, OnTakeDamage);
+        if (AreClientCookiesCached(client))
+        {
+            char cookieSetting[8];
+            GetClientCookie(client, spEnabledPref, cookieSetting, sizeof(cookieSetting));
+            if (cookieSetting[0] == '\0')
+            {
+                SetClientCookie(client, spEnabledPref, "true");
+                clientEnabled[client] = true;
+            }
+            else if (StrEqual(cookieSetting, "false"))
+                clientEnabled[client] = false;
+            else
+                clientEnabled[client] = true;
+        }
+    }
 }
 
 public void OnClientDisconnect(int client)
@@ -110,7 +138,7 @@ public Action OnTakeDamage(int victim, int& attacker, int& inflictor, float& dam
     {
         if (victim == attacker)
             return Plugin_Continue;
-        
+
         if (clientEnabled[victim] || clientEnabled[attacker])
             return Plugin_Handled;
     }
@@ -137,9 +165,7 @@ public void OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
         if (isSkurfMap)
         {
             if (collisionGroupOffset != -1 || collisionGroupOffset != 0)
-            {
                 SetEntData(client, collisionGroupOffset, 2, 4, true);
-            }
         }
         // if Plugin is enabled, create a timer to add uber to a player.
         if (isEnabled)
@@ -149,7 +175,7 @@ public void OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
 
 public void OnRoundEnd(Event event, const char[] name, bool dontBroadcast)
 {
-    if (!CheckForWeekend())
+    if (!SNT_CheckForWeekend())
     {
         SetConVarInt(isEnabledConVar, 0);
         CPrintToChatAll("%s END OF ROUND! {fullred}DISABLING SPAWN PROTECTION!", PREFIX);
@@ -173,45 +199,17 @@ public void CVC_ToggleSpawnProtection(ConVar convar, const char[] oldValue, cons
 public void CVC_SetAsSkurfMap(ConVar convar, const char[] oldValue, const char[] newValue)
 {
     int mode = StringToInt(newValue);
-    if (mode == 0)
+    if (mode != 1)
         isSkurfMap = false;
     else
         isSkurfMap = true;
-}
-
-void CheckIfSkurfMap()
-{
-    if (FindConVar("snt_sp_is_skurf") != null)
-    {
-        char currentLine[64];
-        char currentMap[64];
-        GetCurrentMap(currentMap, sizeof(currentMap));
-
-        while (ReadFileLine(skurfMapList, currentLine, sizeof(currentLine)))
-        {
-            TrimString(currentLine);
-            if (StrEqual(currentMap, currentLine))
-            {
-                notifySkurfMap = CreateTimer(360.0, NotifySkurfMap_Timer, 0, TIMER_FLAG_NO_MAPCHANGE | TIMER_REPEAT);
-                SetConVarInt(isSkillSurfConVar, 1);
-                break;
-            }
-            SetConVarInt(isSkillSurfConVar, 0);
-        }
-
-        if (isSkillSurfConVar.IntValue == 1)
-        {
-            for (int i = 1; i < MaxClients; i++)
-                clientEnabled[i] = true;
-        }
-    }
 }
 
 void ToggleSP()
 {
     if (FindConVar("snt_sp_enabled") != null)
     {
-        currentlyWeekend = CheckForWeekend();
+        currentlyWeekend = SNT_CheckForWeekend();
 
         if (currentlyWeekend && !isSkurfMap)
             SetConVarInt(isEnabledConVar, 0);
@@ -239,17 +237,19 @@ public Action AddUberToPlayer_Timer(Handle timer, any client)
         if (isSkurfMap)
             if (clientEnabled[client])
             {
-                SetEntityRenderColor(client, 155, 255, 155, 125);
+                isActive[client] = true;
+                SetEntityRenderColor(client, 155, 255, 155, 50);
                 TF2_AddCondition(client, TFCond_UberchargedHidden);
             }
             else
             {
+                isActive[client] = false;
                 SetEntityRenderColor(client, 255, 255, 255, 255);
                 return Plugin_Handled;
             }
         else
         {
-            SetEntityRenderColor(client, 155, 255, 155, 125);
+            SetEntityRenderColor(client, 155, 255, 155, 50);
             TF2_AddCondition(client, TFCond_UberchargedHidden, 5.0);
             CreateTimer(5.0, RenderClientNormally_Timer, client);
         }
@@ -266,12 +266,12 @@ public void RenderClientNormally_Timer(Handle timer, any client)
 
 public Action NotifySPDisabled_Timer(Handle timer)
 {
-    if (!isSkurfMap)
+    if (!isSkurfMap && !isEnabled)
     {
         if (!currentlyWeekend)
-            CPrintToChatAll("%s {orange}SPAWN PROTECTION IS DISABLED!!", PREFIX);
+            CPrintToChatAll("%s {orange}SPAWN PROTECTION IS DISABLED! POINTS HAVE BEEN LOWERED!", PREFIX);
         else
-            CPrintToChatAll("%s {orange}Spawn Protection is disabled on weekends!", PREFIX);
+            CPrintToChatAll("%s {orange}Spawn Protection is disabled on weekends! Points will be lowered!", PREFIX);
     }
 
     return Plugin_Handled;
@@ -294,8 +294,10 @@ public Action USR_ToggleSP(int client, int args)
         if (clientEnabled[client])
         {
             CPrintToChat(client, "%s You have {greenyellow}enabled{default} spawn protection!", PREFIX);
-            SetEntityRenderColor(client, 255, 255, 255, 125);
+            SetEntityRenderColor(client, 255, 255, 255, 50);
             TF2_AddCondition(client, TFCond_UberchargedHidden);
+            TF2_RespawnPlayer(client);
+            SetClientCookie(client, spEnabledPref, "true");
         }
 
         else
@@ -303,6 +305,7 @@ public Action USR_ToggleSP(int client, int args)
             CPrintToChat(client, "%s You have {fullred}disabled{default} spawn protection!", PREFIX);
             SetEntityRenderColor(client, 255, 255, 255, 255);
             TF2_RemoveCondition(client, TFCond_UberchargedHidden);
+            SetClientCookie(client, spEnabledPref, "false");
         }
 
         return Plugin_Handled;

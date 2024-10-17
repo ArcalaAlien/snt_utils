@@ -1,30 +1,35 @@
 #include <sourcemod>
 #include <sdkhooks>
-
-
+#include <goomba>
 
 public Plugin:myinfo =
 {
 	name = "SNT Collision Plugin",
 	author = "Arcala the Gyiyg",
 	description = "When two enemy players collide, checks their speeds ",
-	version = "1.0.1",
-	url = "N/A"
+	version = "1.0.2",
+	url = "https://github.com/ArcalaAlien/snt_utils"
 }
 
+bool lateLoad;
 bool killedByCollision[MAXPLAYERS + 1] = { false, ... };
 bool isEnabled;
 ConVar isSkurfMap;
+
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
+{
+    lateLoad = late;
+    return APLRes_Success;
+}
 
 public void OnPluginStart()
 {
     HookEvent("player_death", OnPlayerDeath, EventHookMode_Pre);
 
+    if (lateLoad)
     for (int i = 1; i < MaxClients; i++)
-    {
-        if (ValidateClient(i))
+        if (IsValidClient(i))
             OnClientPutInServer(i);
-    }
 
     isSkurfMap = CreateConVar("snt_sp_is_skurf", "0.0", "Change spawnprotection modes between skill-surf and combat surf.", 0, true, 0.0, true, 1.0);
     if (FindConVar("snt_sp_is_skurf") != null)
@@ -49,20 +54,20 @@ public void OnMapStart()
 
 public void OnClientPutInServer(int client)
 {
-    if (ValidateClient(client))
+    if (IsValidClient(client))
         SDKHook(client, SDKHook_StartTouch, Hook_StartTouch);
 }
 
 public void OnClientDisconnect(int client)
 {
-    if (ValidateClient(client))
+    if (IsValidClient(client))
     {
         SDKUnhook(client, SDKHook_StartTouch, Hook_StartTouch);
         killedByCollision[client] = false;
     }
 }
 
-bool ValidateClient(int client)
+bool IsValidClient(int client)
 {
     if (IsClientConnected(client) && IsClientInGame(client) && !IsFakeClient(client))
         return true;
@@ -72,90 +77,78 @@ bool ValidateClient(int client)
 
 public Action OnPlayerDeath(Event event, const char[] name, bool dontBroadcast)
 {
+    PrintToServer("[SNT] OnPlayerDeath Called");
     int client = GetClientOfUserId(GetEventInt(event, "userid"))
     if (killedByCollision[client])
     {
-        SetEventString(event, "weapon_logclassname", "collide");
-        SetEventString(event, "weapon", "taunt_scout");
+        PrintToServer("[SNT] Client was killed by collision");
+        if (!SetEventString(event, "weapon_logclassname", "collision"))
+            PrintToServer("[SNT] Set weapon_logclassname to collide");
+        else
+            PrintToServer("[SNT] Set weapon_logclassname to collide.");
+        
+        if (!SetEventString(event, "weapon", "vehicle"))
+            PrintToServer("[SNT] Unable to set weapon to taunt_scout");
+        else
+            PrintToServer("[SNT] Set weapon to taunt_scout");
+
         killedByCollision[client] = false;
     }
-    return Plugin_Continue;
+    else
+        PrintToServer("[SNT] Client was not killed by collision");
+
+    return Plugin_Changed;
 }
 
-public Action Hook_StartTouch(int client, int client2)
+public Action Hook_StartTouch(int attacker, int victim)
 {
-    if (isEnabled)
-    {
-        float client1Vectors[3];
-        float client2Vectors[3];
-        float client1Velocity;
-        float client2Velocity;
-        float averageVelocity;
-        float velocityDifference;
-        
-        if (client2 < MaxClients && client2 > 0)
+    if ((attacker > 0 && victim > 0) && (attacker < MaxClients && victim < MaxClients))
+        if (isEnabled)
         {
-            int client1Health;
-            int client2Health;
-
-            client1Health = GetClientHealth(client);
-            client2Health = GetClientHealth(client2);
-
-            GetEntPropVector(client, Prop_Data, "m_vecVelocity", client1Vectors);
-            GetEntPropVector(client2, Prop_Data, "m_vecVelocity", client2Vectors);
-
-            for(new i = 0; i <= 2; i++)
+            if (IsValidClient(attacker) && IsValidClient(victim))
             {
-                client1Vectors[i] *= client1Vectors[i];
-                client2Vectors[i] *= client2Vectors[i];
-            }
+                float attackerCurVel[3];
+                float victimCurVel[3];
+                float attackerAvgVel;
+                float victimAvgVel;
+                float totalAvgVel;
+                float velPercent;
+                float velDiff;
 
-            client1Velocity = SquareRoot(client1Vectors[0] + client1Vectors[1] + client1Vectors[2]);
-            client2Velocity = SquareRoot(client2Vectors[0] + client2Vectors[1] + client2Vectors[2]);
-            averageVelocity = ((client1Velocity + client2Velocity)/2)
+                int victimHealth = GetClientHealth(victim);
+                GetEntPropVector(attacker, Prop_Data, "m_vecVelocity", attackerCurVel);
+                GetEntPropVector(victim, Prop_Data, "m_vecVelocity", victimCurVel);
 
-            if (averageVelocity >= 1000.0)
-            {
-                if (client1Velocity > client2Velocity)
+                attackerAvgVel = SquareRoot(Pow(attackerCurVel[0], 2.0) + Pow(attackerCurVel[1], 2.0));
+                victimAvgVel = SquareRoot(Pow(victimCurVel[0], 2.0) + Pow(victimCurVel[1], 2.0));
+                totalAvgVel = (attackerAvgVel + victimAvgVel) / 2;
+                velDiff = (attackerAvgVel - victimAvgVel);
+                if (attackerAvgVel > victimAvgVel)
                 {
-                    if (client1Velocity >= 500.0 && client2Velocity == 0.0)
-                    {
-                        float floatClient2Health = float(client2Health);
-                        if ((floatClient2Health * velocityDifference) > floatClient2Health)
-                            killedByCollision[client2] = true;
-                        SDKHooks_TakeDamage(client2, client, client, (floatClient2Health * 6.0), DMG_CRIT, -1);
-                    }
+                    if (velDiff > 300.0)
+                        velPercent = 6.0;
                     else
                     {
-                        velocityDifference = (client2Velocity/client1Velocity);
-                        float floatClient2Health = float(client2Health);
-                        if ((floatClient2Health * velocityDifference) > floatClient2Health)
-                            killedByCollision[client2] = true;
-                        SDKHooks_TakeDamage(client2, client, client, (floatClient2Health * velocityDifference), DMG_CRIT, -1);
+                        if (velPercent != 0)
+                            velPercent = (victimAvgVel / attackerAvgVel);
+                        else
+                            velPercent = 6.0;
                     }
-
                 }
-                else if (client1Velocity < client2Velocity)
+                else
+                    return Plugin_Continue;
+
+                //(attackerAvgVel > victimAvgVel) ? velPercent = (victimAvgVel / attackerAvgVel) : velPercent = (attackerAvgVel / victimAvgVel);
+
+                if (totalAvgVel > 500.0)
                 {
-                    if (client2Velocity >= 500.0 && client1Velocity == 0.0)
-                    {
-                        float floatClient1Health = float(client1Health);
-                        if ((floatClient1Health * velocityDifference) > floatClient1Health)
-                            killedByCollision[client] = true;
-                        SDKHooks_TakeDamage(client, client2, client2, (floatClient1Health * 6.0), DMG_CRIT, -1);
-                    }
-                    else
-                    {
-                        velocityDifference = (client1Velocity/client2Velocity);
-                        float floatClient1Health = float(client1Health);
-                        if ((floatClient1Health * velocityDifference) > floatClient1Health)
-                            killedByCollision[client] = true;
-                        SDKHooks_TakeDamage(client, client2, client2, (floatClient1Health * velocityDifference), DMG_CRIT, -1);
-                    }
+                    float damageToDo = (float(victimHealth) * velPercent);
+                    if (damageToDo > victimHealth)
+                        killedByCollision[victim] = true;
+                    SDKHooks_TakeDamage(victim, attacker, attacker, damageToDo, DMG_VEHICLE | DMG_CRIT, 0);
                 }
             }
         }
-    }
 
     return Plugin_Continue;
 }
