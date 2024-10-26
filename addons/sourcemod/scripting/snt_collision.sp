@@ -77,25 +77,14 @@ bool IsValidClient(int client)
 
 public Action OnPlayerDeath(Event event, const char[] name, bool dontBroadcast)
 {
-    PrintToServer("[SNT] OnPlayerDeath Called");
     int client = GetClientOfUserId(GetEventInt(event, "userid"))
     if (killedByCollision[client])
     {
-        PrintToServer("[SNT] Client was killed by collision");
-        if (!SetEventString(event, "weapon_logclassname", "collision"))
-            PrintToServer("[SNT] Set weapon_logclassname to collide");
-        else
-            PrintToServer("[SNT] Set weapon_logclassname to collide.");
-        
-        if (!SetEventString(event, "weapon", "vehicle"))
-            PrintToServer("[SNT] Unable to set weapon to taunt_scout");
-        else
-            PrintToServer("[SNT] Set weapon to taunt_scout");
+        SetEventString(event, "weapon_logclassname", "collision");
+        SetEventString(event, "weapon", "vehicle");
 
         killedByCollision[client] = false;
     }
-    else
-        PrintToServer("[SNT] Client was not killed by collision");
 
     return Plugin_Changed;
 }

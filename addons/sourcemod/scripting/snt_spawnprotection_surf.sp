@@ -31,13 +31,12 @@ bool currentlyWeekend = false;
 
 ConVar isEnabledConVar;
 ConVar mapTypeConVar;
+ConVar isWeekendConVar;
 
 Handle spEnabledPref;
 
 Handle notifyProtectionOff = INVALID_HANDLE;
 Handle notifySkurfMap = INVALID_HANDLE;
-
-int collisionGroupOffset;
 
 bool lateLoad;
 
@@ -49,16 +48,16 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 
 public void OnPluginStart()
 {
-
-    collisionGroupOffset = FindSendPropInfo("CBaseEntity", "m_CollisionGroup");
     HookEvent("player_spawn", OnPlayerSpawn);
     HookEvent("teamplay_round_win", OnRoundEnd);
 
     isEnabledConVar = CreateConVar("snt_sp_enabled", "1.0", "Enable / disable spawn protection", 0, true, 0.0, true, 1.0);
     mapTypeConVar = FindConVar("snt_map_type");
+    isWeekendConVar = FindConVar("snt_is_weekend");
 
     HookConVarChange(isEnabledConVar, CVC_ToggleSpawnProtection); 
     HookConVarChange(mapTypeConVar, CVC_SetAsSkurfMap);
+    HookConVarChange(isWeekendConVar, CVC_UpdateWeekend);
 
     spEnabledPref = RegClientCookie("snt_sp_autoenable", "Whether spawn protection will be autoenabled for the player on a skill surf map.", CookieAccess_Public);
 
@@ -76,12 +75,15 @@ public void OnPluginStart()
 
 public void OnMapStart()
 {
-    if (mapTypeConVar != null)
-
     if (mapTypeConVar.IntValue == 1)
         isSkurfMap = true;
     else
         isSkurfMap = false;
+
+    currentlyWeekend = SNT_CheckForWeekend();
+
+    if (currentlyWeekend)
+        isEnabledConVar.SetBool(false, true);
 
     ToggleSP();
 }
@@ -161,25 +163,34 @@ public void OnPlayerSpawn(Event event, const char[] name, bool dontBroadcast)
 
     if (SNT_IsValidClient(client))
     {
-        // Enable No Block on skill surf maps.
-        if (isSkurfMap)
-        {
-            if (collisionGroupOffset != -1 || collisionGroupOffset != 0)
-                SetEntData(client, collisionGroupOffset, 2, 4, true);
-        }
-        // if Plugin is enabled, create a timer to add uber to a player.
         if (isEnabled)
+        // if Plugin is enabled, create a timer to add uber to a player.
             CreateTimer(0.1, AddUberToPlayer_Timer, client);
     }
 }
 
 public void OnRoundEnd(Event event, const char[] name, bool dontBroadcast)
 {
-    if (!SNT_CheckForWeekend())
+    if (!currentlyWeekend)
     {
         SetConVarInt(isEnabledConVar, 0);
         CPrintToChatAll("%s END OF ROUND! {fullred}DISABLING SPAWN PROTECTION!", PREFIX);
     }
+}
+
+public void CVC_UpdateWeekend(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+    if (StrEqual(newValue, "true"))
+    {
+        currentlyWeekend = true;
+        isEnabledConVar.SetInt(0, true);
+    }
+    else
+    {
+        currentlyWeekend = false;
+        isEnabledConVar.SetInt(1, true);
+    }
+
 }
 
 public void CVC_ToggleSpawnProtection(ConVar convar, const char[] oldValue, const char[] newValue)
@@ -209,12 +220,10 @@ void ToggleSP()
 {
     if (FindConVar("snt_sp_enabled") != null)
     {
-        currentlyWeekend = SNT_CheckForWeekend();
-
         if (currentlyWeekend && !isSkurfMap)
-            SetConVarInt(isEnabledConVar, 0);
+            SetConVarBool(isEnabledConVar, false);
         else
-            SetConVarInt(isEnabledConVar, 1);
+            SetConVarBool(isEnabledConVar, true);
 
         if (isSkurfMap && notifySkurfMap == INVALID_HANDLE)
         {
@@ -239,10 +248,12 @@ public Action AddUberToPlayer_Timer(Handle timer, any client)
             {
                 isActive[client] = true;
                 SetEntityRenderColor(client, 155, 255, 155, 50);
+                SetEntityCollisionGroup(client, 2);
                 TF2_AddCondition(client, TFCond_UberchargedHidden);
             }
             else
             {
+                SetEntityCollisionGroup(client, 5);
                 isActive[client] = false;
                 SetEntityRenderColor(client, 255, 255, 255, 255);
                 return Plugin_Handled;
