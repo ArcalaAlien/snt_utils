@@ -1,9 +1,17 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
+#include <tf2powups_stocks>
 
 bool lateLoad;
 int roundStarts;
+
+ConVar tf_spells_enabled;
+ConVar tf_powerup_mode;
+
+// static int powerups[] = {
+
+// }
 
 public Plugin myinfo =
 {
@@ -24,6 +32,9 @@ public void OnPluginStart()
 {
     HookEvent("teamplay_round_active", OnRoundStart);
 
+    tf_spells_enabled = FindConVar("tf_spells_enabled");
+    tf_powerup_mode = FindConVar("tf_powerup_mode");
+
     if (lateLoad)
         CreateTimer(5.0, Timer_CreatePowerups);
 }
@@ -31,10 +42,21 @@ public void OnPluginStart()
 public void OnMapStart()
 {
     roundStarts = 0;
+    if (tf_powerup_mode.BoolValue)
+        ServerCommand("sv_maxvelocity 5000");
+
+    if (tf_powerup_mode.BoolValue)
+        AddCommandListener(JoinTeam_CB ,"changeteam");
 }
 
 public void OnMapEnd()
 {
+    if (tf_powerup_mode != null && tf_spells_enabled != null)
+    {
+        RemoveCommandListener(JoinTeam_CB, "changeteam");
+        tf_powerup_mode.SetInt(0);
+        tf_spells_enabled.SetInt(0);
+    }
     roundStarts = 0;
 }
 
@@ -42,13 +64,22 @@ public Action OnRoundStart (Event event, const char[] name, bool dontBroadcast)
 {
     roundStarts++;
     PrintToServer("Round has started.");
-    if (roundStarts == 3)
-        CreateTimer(0.1, Timer_CreatePowerups);
+    CreateTimer(0.1, Timer_CreatePowerups);
+    // if (roundStarts == 2)
+    //     CreateTimer(0.1, Timer_CreatePowerups);
+    return Plugin_Continue;
+}
+
+public Action JoinTeam_CB (int client, const char[] command, int args)
+{
+    PrintToServer("Client %i called changeteam", client);
+    ShowVGUIPanel(client, "team");
     return Plugin_Continue;
 }
 
 public Action Timer_CreatePowerups (Handle timer, any data)
 {
+    PrintToServer("Powerup Timer Called");
     char currentMap[256];
     GetCurrentMap(currentMap, sizeof(currentMap));
 
@@ -65,7 +96,6 @@ public Action Timer_CreatePowerups (Handle timer, any data)
         {
             char classname[64];
             spellLocationsKV.GetString("classname", classname, sizeof(classname), "tf_spell_pickup");
-
             spellLocationsKV.GotoFirstSubKey();
 
             char originStr[48];
@@ -79,22 +109,17 @@ public Action Timer_CreatePowerups (Handle timer, any data)
                 for (int i; i < 3; i++)
                     origin[i] = StringToFloat(originStrExpl[i]);
 
-                int entIndex = CreateEntityByName(classname);
-
                 if (StrEqual(classname, "tf_spell_pickup"))
                 {
+                    int entIndex = CreateEntityByName(classname);
                     int tier = spellLocationsKV.GetNum("tier");
 
                     if (IsValidEdict(entIndex))
                     {
-                        DispatchKeyValue(entIndex, "AutoMaterialize", "true");
                         DispatchKeyValueInt(entIndex, "tier", tier);
+                        DispatchKeyValueVector(entIndex, "origin", origin);
                         if (DispatchSpawn(entIndex))
-                        {
                             TeleportEntity(entIndex, origin);
-                            SDKHook(entIndex, SDKHook_EndTouchPost, Hook_EndTouchPost);
-                            CreateTimer(0.5, Timer_EnablePowerup, entIndex);
-                        }
                         else
                             ThrowError("[SNT] Unable to spawn spellbook.");
                     }
@@ -103,15 +128,43 @@ public Action Timer_CreatePowerups (Handle timer, any data)
                 }
                 else if (StrEqual(classname, "info_powerup_spawn"))
                 {
+                    int type = GetRandomInt(0, 3);
+                    int entIndex = -1;
+                    switch(type)
+                    {
+                        case 1:
+                            entIndex = CreateEntityByName("item_powerup_uber");
+                        default:
+                            entIndex = CreateEntityByName("item_powerup_rune");
+                    }
                     if (IsValidEdict(entIndex))
                     {
-                        DispatchKeyValue(entIndex, "AutoMaterialize", "true");
-                        DispatchKeyValueInt(entIndex, "TeamNum", 0);
-                        DispatchKeyValue(entIndex, "StartDisabled", "false");
+                        char powerupClass[32];
+                        GetEntityClassname(entIndex, powerupClass, sizeof(powerupClass));
+
+                        if (StrEqual(powerupClass, "item_powerup_rune"))
+                        {
+                            // Thank you Scag!!
+                            eRuneTypes runeType;
+                            runeType = view_as<eRuneTypes>(GetRandomInt(1, view_as<int>(Rune_LENGTH)));
+                            SetRuneType(entIndex, runeType);
+                            SetRuneKillTime(entIndex, 10.0);
+                        }
+
+                        int runeSpawn = -1;
+                        runeSpawn = CreateEntityByName("info_powerup_spawn");
+
+                        DispatchKeyValueVector(runeSpawn, "origin", origin);
+                        DispatchKeyValueVector(entIndex, "origin", origin)
                         if (DispatchSpawn(entIndex))
                             TeleportEntity(entIndex, origin);
                         else
-                            ThrowError("[SNT] Unable to spawn info_powerup_spawn");
+                            ThrowError("[SNT] Unable to spawn powerup");
+
+                        if (DispatchSpawn(runeSpawn))
+                            TeleportEntity(runeSpawn, origin);
+                        else
+                            ThrowError("[SNT] Unable to spawn powerup spawn location");
                     }
                     else
                         ThrowError("[SNT] Unable to create a valid edict.");
@@ -127,62 +180,6 @@ public Action Timer_CreatePowerups (Handle timer, any data)
     }
     else
         ThrowError("[SNT] Unable to open %s as a keyvalue structure", spellLocations);
-
-    return Plugin_Handled;
-}
-
-public void Hook_EndTouchPost (int entity, int other)
-{
-    CreateTimer(9.5, Timer_RegenPowerup, entity);
-}
-
-public Action Timer_RegenPowerup (Handle timer, any entity)
-{
-    if (IsValidEdict(entity))
-    {
-        char classname[64];
-        GetEntityClassname(entity, classname, sizeof(classname));
-
-        if (StrEqual(classname, "tf_spell_pickup"))
-        {
-            float origin[3];
-            GetEntPropVector(entity, Prop_Data, "m_vOriginalSpawnOrigin", origin);
-            int tier = GetEntProp(entity, Prop_Data, "m_nTier");
-
-            RemoveEdict(entity);
-            CreateSingleBook(origin, tier);
-        }
-    }
-    
-    return Plugin_Handled;
-}
-
-void CreateSingleBook(float origin[3], int tier)
-{
-    int entIndex = CreateEntityByName("tf_spell_pickup");
-    if (IsValidEdict(entIndex))
-    {
-        DispatchKeyValueInt(entIndex, "tier", tier);
-        if (DispatchSpawn(entIndex))
-        {
-            TeleportEntity(entIndex, origin);
-            SDKHook(entIndex, SDKHook_EndTouchPost, Hook_EndTouchPost);
-            CreateTimer(0.5, Timer_EnablePowerup, entIndex);
-        }
-        else
-            ThrowError("[SNT] Unable to spawn spellbook.");
-    }
-    else
-        ThrowError("[SNT] Unable to create a valid edict.");
-}
-
-public Action Timer_EnablePowerup (Handle timer, any entity)
-{
-    if (IsValidEdict(entity))
-        if(AcceptEntityInput(entity, "Enable"))
-            PrintToServer("Enabled powerup with index (%i)", entity);
-        else
-            PrintToServer("Unable to enable Book with index (%i)", entity);
 
     return Plugin_Handled;
 }
