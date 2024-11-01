@@ -1,7 +1,11 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
+#include <morecolors>
+
+#undef REQUIRE_PLUGIN
 #include <rtd2>
+#define REQUIRE_PLUGIN
 
 // Pickup Models
 #define PRESENT_MODEL "models/items/tf_gift.mdl"
@@ -37,17 +41,14 @@ int presentsCount;
 ArrayList presentIDs;
 ArrayList triggerIDs;
 
-ConVar sm_rtd2_accessflags = null;
 ConVar snt_map_type = null;
-
-Handle rotateTimers[MAX_PRESENTS] = {INVALID_HANDLE, ...};
 
 public Plugin myinfo =
 {
     name = "SNT Arena Maps",
     author = "Arcala the Gyiyg",
     description = "Handles adding rtd-based powerups into maps",
-    version = "2.0.0",
+    version = "2.0.1",
     url = "https://github.com/ArcalaAlien/snt_utils"
 };
 
@@ -59,11 +60,13 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 
 public void OnPluginStart()
 {
+    if (!LibraryExists("RollTheDice2"))
+        ThrowError("[SNT] RTD2 plugin not found!");
+
     HookEvent("teamplay_round_active", OnRoundStart);
     presentIDs = CreateArray();
     triggerIDs = CreateArray();
 
-    sm_rtd2_accessflags = FindConVar("sm_rtd2_accessflags");
     snt_map_type = FindConVar("snt_map_type");
 
     if (lateLoad)
@@ -71,60 +74,54 @@ public void OnPluginStart()
 }
 
 public void OnMapStart() {
-    if (snt_map_type.IntValue == 2)
-    {
+    if (snt_map_type.IntValue == 2) {
         ServerCommand("sv_maxvelocity 5000");
-        sm_rtd2_accessflags.SetInt(ADMFLAG_GENERIC);
+        int month = GetMonth();
+
+        switch (month) {
+            case 10:
+                PrecacheModel(PUMPKIN_MODEL);
+            case 12:
+                PrecacheModel(PRESENT_MODEL);
+            default:
+                PrecacheModel(COOLER_MODEL);
+        }
+
+        PrecacheModel(TRIGGER_MODEL);
+        PrecacheSound(PICKUP_SOUND);
     }
-    else
-        sm_rtd2_accessflags.SetInt(0);
-
-    int month = GetMonth();
-
-    switch (month) {
-        case 10:
-            PrecacheModel(PUMPKIN_MODEL);
-        case 12:
-            PrecacheModel(PRESENT_MODEL);
-        default:
-            PrecacheModel(COOLER_MODEL);
-    }
-
-    PrecacheModel(TRIGGER_MODEL);
-    PrecacheSound(PICKUP_SOUND);
 }
 
 public void OnMapEnd() {
-    presentIDs.Clear();
-    triggerIDs.Clear();
-    presentsCount = 0;
-    for (int i; i < MAX_PRESENTS; i++) {
-        if (rotateTimers[i] != INVALID_HANDLE)
-            CloseHandle(rotateTimers[i]);
-
-        rotateTimers[i] = INVALID_HANDLE;
-        presentsLoaded[i] = false;
+    if (snt_map_type.IntValue == 2) {
+        presentIDs.Clear();
+        triggerIDs.Clear();
+        presentsCount = 0;
     }
+
 }
 
 public void OnGameFrame() {
-    if (GetMonth() == 10 || GetMonth() == 12)
-        return;
+    if (snt_map_type.IntValue == 2) {
+        if (GetMonth() == 10 || GetMonth() == 12)
+            return;
 
-    for (int i; i < MAX_PRESENTS; i++) {
-        if (!presentsLoaded[i])
-            continue;
-        
-        int present = presentIDs.Get(i);
-        if (!IsValidEdict(present))
-            continue;
+        for (int i; i < MAX_PRESENTS; i++) {
+            if (!presentsLoaded[i])
+                continue;
+            
+            int present = presentIDs.Get(i);
+            if (!IsValidEdict(present))
+                continue;
 
-        float presentAngles[3];
-        GetEntPropVector(present, Prop_Data, "m_angRotation", presentAngles);
+            float presentAngles[3];
+            GetEntPropVector(present, Prop_Data, "m_angRotation", presentAngles);
 
-        presentAngles[1] += 1.0;
-        DispatchKeyValueVector(present, "angles", presentAngles);
+            presentAngles[1] += 1.0;
+            DispatchKeyValueVector(present, "angles", presentAngles);
+        }
     }
+
 }
 
 public Action OnRoundStart (Event event, const char[] name, bool dontBroadcast) {
@@ -271,9 +268,18 @@ bool IsValidClient (int client) {
         return false;
 }
 
+public Action RTD2_CanRollDice (int client) {
+    if (snt_map_type.IntValue == 2) {
+        CPrintToChat(client, "{white}[{orange}RTD{white}] Find RTD boxes on the map to roll the dice!");
+        return Plugin_Stop;
+    }
+
+    return Plugin_Continue;
+}
+
 // int entity, int other
 public Action OnPresentTouched (int trigger, int client) {
-    if (RTD2_GetClientPerk(client) != INVALID_PERK)
+    if (!IsValidClient(client) || RTD2_GetClientPerk(client) != INVALID_PERK)
         return Plugin_Stop;
 
     int presentIndex = triggerIDs.FindValue(trigger);
