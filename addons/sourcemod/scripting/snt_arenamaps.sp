@@ -1,24 +1,53 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
-#include <tf2powups_stocks>
+#include <rtd2>
+
+// Pickup Models
+#define PRESENT_MODEL "models/items/tf_gift.mdl"
+#define COOLER_MODEL  "models/props_island/mannco_case_small.mdl"
+#define PUMPKIN_MODEL "models/props_halloween/pumpkin_loot.mdl"
+#define TRIGGER_MODEL "error.mdl"
+
+#define PICKUP_SOUND  "ui/trade_ready.wav"
+
+// Pickup Colors
+#define DISABLED "125, 125, 125"
+#define DEFAULT "255, 255, 255"
+#define RED "255 ,0 ,0"
+#define ORANGE "255, 155, 0"
+#define YELLOW "255, 255, 0"
+#define GREEN "0, 255, 0"
+#define CYAN "0, 255, 255"
+#define BLUE "0, 0, 255"
+#define PURPLE "155, 0, 255"
+#define PINK "255, 0, 255"
+#define NUM_COLORS 9
+
+// Max pickups per map
+#define MAX_PRESENTS 16
+
+// RTD2_GetClientPerk returns -1 as a RTDPerk if the player is not in a roll.
+#define INVALID_PERK view_as<RTDPerk>(-1)
 
 bool lateLoad;
-int roundStarts;
+bool presentsLoaded[MAX_PRESENTS] = {false, ...};
+int presentsCount;
 
-ConVar tf_spells_enabled;
-ConVar tf_powerup_mode;
+ArrayList presentIDs;
+ArrayList triggerIDs;
 
-// static int powerups[] = {
+ConVar sm_rtd2_accessflags = null;
+ConVar snt_map_type = null;
 
-// }
+Handle rotateTimers[MAX_PRESENTS] = {INVALID_HANDLE, ...};
 
 public Plugin myinfo =
 {
     name = "SNT Arena Maps",
     author = "Arcala the Gyiyg",
-    description = "Handles adding spell books to arena surf maps",
-    version = "1.0.0",
+    description = "Handles adding rtd-based powerups into maps",
+    version = "2.0.0",
     url = "https://github.com/ArcalaAlien/snt_utils"
 };
 
@@ -31,155 +60,331 @@ public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max
 public void OnPluginStart()
 {
     HookEvent("teamplay_round_active", OnRoundStart);
+    presentIDs = CreateArray();
+    triggerIDs = CreateArray();
 
-    tf_spells_enabled = FindConVar("tf_spells_enabled");
-    tf_powerup_mode = FindConVar("tf_powerup_mode");
+    sm_rtd2_accessflags = FindConVar("sm_rtd2_accessflags");
+    snt_map_type = FindConVar("snt_map_type");
 
     if (lateLoad)
         CreateTimer(5.0, Timer_CreatePowerups);
 }
 
-public void OnMapStart()
-{
-    roundStarts = 0;
-    if (tf_powerup_mode.BoolValue)
-        ServerCommand("sv_maxvelocity 5000");
-
-    if (tf_powerup_mode.BoolValue)
-        AddCommandListener(JoinTeam_CB ,"changeteam");
-}
-
-public void OnMapEnd()
-{
-    if (tf_powerup_mode != null && tf_spells_enabled != null)
+public void OnMapStart() {
+    if (snt_map_type.IntValue == 2)
     {
-        RemoveCommandListener(JoinTeam_CB, "changeteam");
-        tf_powerup_mode.SetInt(0);
-        tf_spells_enabled.SetInt(0);
+        ServerCommand("sv_maxvelocity 5000");
+        sm_rtd2_accessflags.SetInt(ADMFLAG_GENERIC);
     }
-    roundStarts = 0;
+    else
+        sm_rtd2_accessflags.SetInt(0);
+
+    int month = GetMonth();
+
+    switch (month) {
+        case 10:
+            PrecacheModel(PUMPKIN_MODEL);
+        case 12:
+            PrecacheModel(PRESENT_MODEL);
+        default:
+            PrecacheModel(COOLER_MODEL);
+    }
+
+    PrecacheModel(TRIGGER_MODEL);
+    PrecacheSound(PICKUP_SOUND);
 }
 
-public Action OnRoundStart (Event event, const char[] name, bool dontBroadcast)
-{
-    roundStarts++;
-    PrintToServer("Round has started.");
+public void OnMapEnd() {
+    presentIDs.Clear();
+    triggerIDs.Clear();
+    presentsCount = 0;
+    for (int i; i < MAX_PRESENTS; i++) {
+        if (rotateTimers[i] != INVALID_HANDLE)
+            CloseHandle(rotateTimers[i]);
+
+        rotateTimers[i] = INVALID_HANDLE;
+        presentsLoaded[i] = false;
+    }
+}
+
+public void OnGameFrame() {
+    if (GetMonth() == 10 || GetMonth() == 12)
+        return;
+
+    for (int i; i < MAX_PRESENTS; i++) {
+        if (!presentsLoaded[i])
+            continue;
+        
+        int present = presentIDs.Get(i);
+        if (!IsValidEdict(present))
+            continue;
+
+        float presentAngles[3];
+        GetEntPropVector(present, Prop_Data, "m_angRotation", presentAngles);
+
+        presentAngles[1] += 1.0;
+        DispatchKeyValueVector(present, "angles", presentAngles);
+    }
+}
+
+public Action OnRoundStart (Event event, const char[] name, bool dontBroadcast) {
     CreateTimer(0.1, Timer_CreatePowerups);
-    // if (roundStarts == 2)
-    //     CreateTimer(0.1, Timer_CreatePowerups);
     return Plugin_Continue;
 }
 
-public Action JoinTeam_CB (int client, const char[] command, int args)
+int GetMonth()
 {
-    PrintToServer("Client %i called changeteam", client);
-    ShowVGUIPanel(client, "team");
+    char month[4];
+    FormatTime(month, sizeof(month), "%m", GetTime());
+
+    return StringToInt(month);
+}
+
+void CreatePresent(float origin[3]) {
+    if (presentsCount > MAX_PRESENTS)
+        ThrowError("[SNT] Too many presents! You are over the current limit of %i", MAX_PRESENTS);
+
+    int presentEnt = -1;
+    presentEnt = CreateEntityByName("prop_dynamic");
+    if (!IsValidEdict(presentEnt))
+        ThrowError("[SNT] Unable to create edict for present.");
+    else {
+        DispatchKeyValueVector(presentEnt, "origin", origin);
+        
+        int month = GetMonth();
+
+        switch (month) {
+            case 10: {
+                DispatchKeyValue(presentEnt, "model", PUMPKIN_MODEL);
+                DispatchKeyValueFloat(presentEnt, "modelscale", 1.25);
+                DispatchKeyValue(presentEnt, "DefaultAnim", "idle");
+            }
+            case 12: {
+                DispatchKeyValue(presentEnt, "model", PRESENT_MODEL);
+                DispatchKeyValueFloat(presentEnt, "modelscale", 1.5);
+                DispatchKeyValue(presentEnt, "DefaultAnim", "spin");
+            }
+            default: {
+                DispatchKeyValue(presentEnt, "model", COOLER_MODEL);
+                DispatchKeyValueFloat(presentEnt, "modelscale", 1.0);
+            }
+        }
+
+        DispatchKeyValueInt(presentEnt, "rendermode", 1);
+        DispatchKeyValue(presentEnt, "targetname", "present_enabled");
+
+        int colorIndex = GetRandomInt(1, NUM_COLORS);
+        switch (colorIndex) {
+            case 1:
+                DispatchKeyValue(presentEnt, "rendercolor", RED);
+            case 2:
+                DispatchKeyValue(presentEnt, "rendercolor", ORANGE);
+            case 3:
+                DispatchKeyValue(presentEnt, "rendercolor", YELLOW);
+            case 4:
+                DispatchKeyValue(presentEnt, "rendercolor", GREEN);
+            case 5:
+                DispatchKeyValue(presentEnt, "rendercolor", CYAN);
+            case 6:
+                DispatchKeyValue(presentEnt, "rendercolor", BLUE);
+            case 7:
+                DispatchKeyValue(presentEnt, "rendercolor", PURPLE);
+            case 8:
+                DispatchKeyValue(presentEnt, "rendercolor", PINK);
+            default:
+                DispatchKeyValue(presentEnt, "rendercolor", DEFAULT);
+        }
+
+        if (DispatchSpawn(presentEnt)) {
+            TeleportEntity(presentEnt, origin);
+            AcceptEntityInput(presentEnt, "DisableCollision");
+
+            int presentTrigger = -1
+            presentTrigger = CreateEntityByName("trigger_multiple");
+            if (!IsValidEdict(presentTrigger)) {
+                AcceptEntityInput(presentEnt, "Kill");
+                presentEnt = -1;
+                ThrowError("[SNT] Unable to create present trigger edict.");
+            }
+            else {
+                // Set trigger origin to the present's origin
+                DispatchKeyValueVector(presentTrigger, "origin", origin);
+                
+                if (!DispatchSpawn(presentTrigger)) {
+                    AcceptEntityInput(presentEnt, "Kill");
+                    presentEnt = -1;
+                    ThrowError("[SNT] Unable to spawn present trigger.");
+                }
+                else {
+                    // Teleport trigger to origin of present
+                    TeleportEntity(presentTrigger, origin);
+
+                    // Set up trigger mins and maxs
+                    float triggerMins[3];
+                    float triggerMaxs[3];
+
+                    // Make the trigger box surround the origin by 48hu
+                    for (int i; i < 3; i++) {
+                        triggerMins[i] = origin[i] - 48.0;
+                        triggerMaxs[i] = origin[i] + 48.0;
+                    }
+                    
+                    // Raise the whole box by 8hu to match the present better.
+                    triggerMins[2] += 8.0;
+                    triggerMaxs[2] += 8.0;
+
+                    // Actually set the mins and maxes for the trigger
+                    SetEntPropVector(presentTrigger, Prop_Send, "m_vecMins", triggerMins);
+                    SetEntPropVector(presentTrigger, Prop_Send, "m_vecMaxs", triggerMaxs);
+
+                    // Set the entity to an error model
+                    SetEntityModel(presentTrigger, TRIGGER_MODEL);
+
+                    // Set solid type to SOLID_BBOX (Bounding box?);
+                    SetEntProp(presentTrigger, Prop_Send, "m_nSolidType", 2);
+
+                    // Enable the trigger
+                    AcceptEntityInput(presentTrigger, "Enable");
+
+                    // Hook the trigger
+                    SDKHookEx(presentTrigger, SDKHook_StartTouch, OnPresentTouched);
+
+                    // Add present entity and trigger entity to arrays at same time to keep the same indicies
+                    presentIDs.Push(presentEnt);
+                    triggerIDs.Push(presentTrigger);
+
+                    // Present has been fully loaded
+                    presentsLoaded[presentsCount] = true;
+                    presentsCount++;
+                }
+            }
+        }
+        else
+            ThrowError("[SNT] Unable to create present!");
+    }
+}
+
+bool IsValidClient (int client) {
+    if (IsClientConnected(client) && IsClientInGame(client) && IsPlayerAlive(client))
+        return true;
+    else
+        return false;
+}
+
+// int entity, int other
+public Action OnPresentTouched (int trigger, int client) {
+    if (RTD2_GetClientPerk(client) != INVALID_PERK)
+        return Plugin_Stop;
+
+    int presentIndex = triggerIDs.FindValue(trigger);
+    int present = presentIDs.Get(presentIndex);
+
+    if (IsValidEdict(present)) {
+        char targetname[32];
+        GetEntPropString(present, Prop_Data, "m_iName", targetname, sizeof(targetname));
+        
+        if (StrEqual(targetname, "present_enabled")) {
+            float presentOrigin[3];
+            GetEntPropVector(present, Prop_Data, "m_vecOrigin", presentOrigin);
+            
+            EmitAmbientSound(PICKUP_SOUND, presentOrigin, present, SNDLEVEL_AIRCRAFT);
+            EmitSoundToClient(client, PICKUP_SOUND);
+            DispatchKeyValue(present, "targetname", "present_disabled");
+            DispatchKeyValue(present, "rendercolor", DISABLED);
+            DispatchKeyValueInt(present, "renderamt", 125);
+            CreateTimer(10.0, Timer_EnablePresent, present);
+            AcceptEntityInput(trigger, "Disable");
+
+            if (IsValidClient(client)) {
+                RTDPerk clientReward = RTD2_Roll(client, ROLLFLAG_IGNORE_PERK_REPEATS | ROLLFLAG_IGNORE_PLAYER_REPEATS);
+
+                char perkGranted[RTD2_MAX_PERK_NAME_LENGTH];
+                clientReward.GetToken(perkGranted, sizeof(perkGranted));
+
+                RTD2_Force(client, perkGranted);
+            }
+        }
+    }
+    else
+        ThrowError("[SNT] Present entity %i doesn't exist or is invalid.", present);
+
+    return Plugin_Continue;
+}
+
+public Action Timer_EnablePresent (Handle timer, any present)
+{
+    int triggerIndex = presentIDs.FindValue(present);
+    int trigger = triggerIDs.Get(triggerIndex);
+
+    if (IsValidEdict(present) && IsValidEdict(trigger)) {
+        DispatchKeyValueInt(present, "renderamt", 255);
+        int colorIndex = GetRandomInt(1, NUM_COLORS);
+        switch (colorIndex) {
+            case 1:
+                DispatchKeyValue(present, "rendercolor", RED);
+            case 2:
+                DispatchKeyValue(present, "rendercolor", ORANGE);
+            case 3:
+                DispatchKeyValue(present, "rendercolor", YELLOW);
+            case 4:
+                DispatchKeyValue(present, "rendercolor", GREEN);
+            case 5:
+                DispatchKeyValue(present, "rendercolor", CYAN);
+            case 6:
+                DispatchKeyValue(present, "rendercolor", BLUE);
+            case 7:
+                DispatchKeyValue(present, "rendercolor", PURPLE);
+            case 8:
+                DispatchKeyValue(present, "rendercolor", PINK);
+            default:
+                DispatchKeyValue(present, "rendercolor", DEFAULT);
+        }
+        DispatchKeyValue(present, "targetname", "present_enabled");
+        AcceptEntityInput(trigger, "Enable");
+    }
+    else
+        ThrowError("[SNT] Either present or trigger edict is invalid.");
+
     return Plugin_Continue;
 }
 
 public Action Timer_CreatePowerups (Handle timer, any data)
 {
-    PrintToServer("Powerup Timer Called");
     char currentMap[256];
     GetCurrentMap(currentMap, sizeof(currentMap));
 
-    char spellLocations[PLATFORM_MAX_PATH];
-    BuildPath(Path_SM, spellLocations, sizeof(spellLocations), "configs/sntdb/arena_maps.cfg");
+    char powerupOrigins[PLATFORM_MAX_PATH];
+    BuildPath(Path_SM, powerupOrigins, sizeof(powerupOrigins), "configs/sntdb/arena_maps.cfg");
 
-    if (!FileExists(spellLocations))
-        ThrowError("[SNT] %s doesn't exist!", spellLocations);
+    if (!FileExists(powerupOrigins))
+        ThrowError("[SNT] %s doesn't exist!", powerupOrigins);
 
-    KeyValues spellLocationsKV = new KeyValues("Maps");
-    if(spellLocationsKV.ImportFromFile(spellLocations))
-    {
-        if(spellLocationsKV.JumpToKey(currentMap))
-        {
-            char classname[64];
-            spellLocationsKV.GetString("classname", classname, sizeof(classname), "tf_spell_pickup");
-            spellLocationsKV.GotoFirstSubKey();
 
-            char originStr[48];
-            char originStrExpl[3][16];
-            float origin[3];
-
-            do
-            {
-                spellLocationsKV.GetString("origin", originStr, sizeof(originStr), "0 0 0");
-                ExplodeString(originStr, " ", originStrExpl, 3, 16);
-                for (int i; i < 3; i++)
-                    origin[i] = StringToFloat(originStrExpl[i]);
-
-                if (StrEqual(classname, "tf_spell_pickup"))
-                {
-                    int entIndex = CreateEntityByName(classname);
-                    int tier = spellLocationsKV.GetNum("tier");
-
-                    if (IsValidEdict(entIndex))
-                    {
-                        DispatchKeyValueInt(entIndex, "tier", tier);
-                        DispatchKeyValueVector(entIndex, "origin", origin);
-                        if (DispatchSpawn(entIndex))
-                            TeleportEntity(entIndex, origin);
-                        else
-                            ThrowError("[SNT] Unable to spawn spellbook.");
-                    }
-                    else
-                        ThrowError("[SNT] Unable to create a valid edict.");
+    KeyValues powerupOriginsKV = new KeyValues("Maps");
+    if(powerupOriginsKV.ImportFromFile(powerupOrigins)) {
+        if(powerupOriginsKV.JumpToKey(currentMap)) {
+            powerupOriginsKV.GotoFirstSubKey();
+            do {
+                char originString[48];
+                char originStringExpl[3][16];
+                float origin[3];
+                powerupOriginsKV.GetString("origin", originString, sizeof(originString), "0 0 0");
+                ExplodeString(originString, " ", originStringExpl, 3, 16);
+                
+                for (int i; i < 3; i++) {
+                    origin[i] = StringToFloat(originStringExpl[i]);
                 }
-                else if (StrEqual(classname, "info_powerup_spawn"))
-                {
-                    int type = GetRandomInt(0, 3);
-                    int entIndex = -1;
-                    switch(type)
-                    {
-                        case 1:
-                            entIndex = CreateEntityByName("item_powerup_uber");
-                        default:
-                            entIndex = CreateEntityByName("item_powerup_rune");
-                    }
-                    if (IsValidEdict(entIndex))
-                    {
-                        char powerupClass[32];
-                        GetEntityClassname(entIndex, powerupClass, sizeof(powerupClass));
 
-                        if (StrEqual(powerupClass, "item_powerup_rune"))
-                        {
-                            // Thank you Scag!!
-                            eRuneTypes runeType;
-                            runeType = view_as<eRuneTypes>(GetRandomInt(1, view_as<int>(Rune_LENGTH)));
-                            SetRuneType(entIndex, runeType);
-                            SetRuneKillTime(entIndex, 10.0);
-                        }
-
-                        int runeSpawn = -1;
-                        runeSpawn = CreateEntityByName("info_powerup_spawn");
-
-                        DispatchKeyValueVector(runeSpawn, "origin", origin);
-                        DispatchKeyValueVector(entIndex, "origin", origin)
-                        if (DispatchSpawn(entIndex))
-                            TeleportEntity(entIndex, origin);
-                        else
-                            ThrowError("[SNT] Unable to spawn powerup");
-
-                        if (DispatchSpawn(runeSpawn))
-                            TeleportEntity(runeSpawn, origin);
-                        else
-                            ThrowError("[SNT] Unable to spawn powerup spawn location");
-                    }
-                    else
-                        ThrowError("[SNT] Unable to create a valid edict.");
-                }
-                else
-                    ThrowError("[SNT] Invalid classname.");
+                CreatePresent(origin);
             }
-            while (spellLocationsKV.GotoNextKey())
-            spellLocationsKV.Close();
+            while (powerupOriginsKV.GotoNextKey())
+            powerupOriginsKV.Close();
         }
         else
-            spellLocationsKV.Close();
+            powerupOriginsKV.Close();
     }
     else
-        ThrowError("[SNT] Unable to open %s as a keyvalue structure", spellLocations);
+        ThrowError("[SNT] Unable to open %s as a keyvalue structure", powerupOrigins);
 
     return Plugin_Handled;
 }
