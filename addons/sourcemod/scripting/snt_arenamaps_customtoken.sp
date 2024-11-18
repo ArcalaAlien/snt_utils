@@ -1,6 +1,7 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
+#include <tf2>
 #include <morecolors>
 
 #undef REQUIRE_PLUGIN
@@ -14,6 +15,17 @@
 #define TRIGGER_MODEL "error.mdl"
 
 #define PICKUP_SOUND  "ui/trade_ready.wav"
+
+// SNT Models / Textures
+#define TOKEN_MODEL      "models/props/snt/token_pickup.mdl"
+#define PALM_TEXTURE_VTF "materials/snt_token_palmtree.vtf"
+#define DARK_GREY_VTF    "materials/colors/trim_dark_grey.vtf"
+#define LIGHT_GREY_VTF   "materials/colors/trim_light_grey.vtf"
+#define WHITE_VTF        "materials/colors/trim_reg_white.vtf"
+#define PALM_TEXTURE_VMT "materials/models/props/snt/token_pickup/snt_token_palmtree_unlit.vmt"
+#define DARK_GREY_VMT    "materials/models/props/snt/token_pickup/colors/trim_dark_grey.vmt"
+#define LIGHT_GREY_VMT   "materials/models/props/snt/token_pickup/colors/trim_light_grey.vmt"
+#define WHITE_VMT        "materials/models/props/snt/token_pickup/colors/trim_reg_white.vmt"
 
 // Pickup Colors
 #define DISABLED    "125, 125, 125"
@@ -37,6 +49,7 @@
 bool lateLoad;
 bool presentsLoaded[MAX_PRESENTS] = {false, ...};
 int presentsCount;
+int gameruleEnt = -1;
 
 ArrayList presentIDs;
 ArrayList triggerIDs;
@@ -52,14 +65,12 @@ public Plugin myinfo =
     url = "https://github.com/ArcalaAlien/snt_utils"
 };
 
-public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
-{
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max) {
     lateLoad = late;
     return APLRes_Success;
 }
 
-public void OnPluginStart()
-{
+public void OnPluginStart() {
     if (!LibraryExists("RollTheDice2"))
         ThrowError("[SNT] RTD2 plugin not found!");
 
@@ -68,6 +79,7 @@ public void OnPluginStart()
     triggerIDs = CreateArray();
 
     snt_map_type = FindConVar("snt_map_type");
+    AddCommandListener(OnForceMapChange, "sm_map");
 
     if (lateLoad)
         CreateTimer(5.0, Timer_CreatePowerups);
@@ -76,19 +88,37 @@ public void OnPluginStart()
 public void OnMapStart() {
     if (snt_map_type.IntValue == 2) {
         ServerCommand("sv_maxvelocity 5000");
-        int month = GetMonth();
+        PrecacheModel(TRIGGER_MODEL, true);
+        PrecacheSound(PICKUP_SOUND, true);
 
-        switch (month) {
-            case 10:
-                PrecacheModel(PUMPKIN_MODEL);
-            case 12:
-                PrecacheModel(PRESENT_MODEL);
-            default:
-                PrecacheModel(COOLER_MODEL);
+        gameruleEnt = FindEntityByClassname(-1, "tf_gamerules");
+        if (gameruleEnt == -1) {
+            gameruleEnt = CreateEntityByName("tf_gamerules");
+            if (gameruleEnt == -1)
+                ThrowError("Unable to find or create a tf_gamerules entity!");
         }
 
-        PrecacheModel(TRIGGER_MODEL);
-        PrecacheSound(PICKUP_SOUND);
+        int month = GetMonth();
+        switch (month) {
+            case 10:
+                PrecacheModel(PUMPKIN_MODEL, true);
+            case 12:
+                PrecacheModel(PRESENT_MODEL, true);
+            default:
+            {
+                PrecacheModel(TOKEN_MODEL, true);
+                PrecacheModel(DARK_GREY_VMT, true);
+                PrecacheModel(LIGHT_GREY_VMT, true);
+                PrecacheModel(WHITE_VMT, true);
+                PrecacheModel(PALM_TEXTURE_VMT, true);
+
+                AddFileToDownloadsTable(TOKEN_MODEL);
+                AddFileToDownloadsTable(DARK_GREY_VTF);
+                AddFileToDownloadsTable(LIGHT_GREY_VTF);
+                AddFileToDownloadsTable(WHITE_VTF);
+                AddFileToDownloadsTable(PALM_TEXTURE_VTF);
+            }
+        }
     }
 }
 
@@ -96,9 +126,29 @@ public void OnMapEnd() {
     if (snt_map_type.IntValue == 2) {
         presentIDs.Clear();
         triggerIDs.Clear();
-        presentsCount = 0;
+        for (int i; i < MAX_PRESENTS; i++) {
+            if (presentsLoaded[i] == false)
+                continue;
+            
+            presentsLoaded[i] = false;
+            presentsCount--;
+        }
     }
+}
 
+public void OnClientDisconnect(int client) {
+    if (snt_map_type.IntValue == 2)
+        if (GetClientCount() <= 1) {
+            presentIDs.Clear();
+            triggerIDs.Clear();
+            for (int i; i < MAX_PRESENTS; i++) {
+                if (presentsLoaded[i] == false)
+                    continue;
+                
+                presentsLoaded[i] = false;
+                presentsCount--;
+            }
+        }
 }
 
 public void OnGameFrame() {
@@ -121,7 +171,22 @@ public void OnGameFrame() {
             DispatchKeyValueVector(present, "angles", presentAngles);
         }
     }
+}
 
+public Action OnForceMapChange(int client, const char[] command, int argc) {
+    if (snt_map_type.IntValue == 2) {
+        presentIDs.Clear();
+        triggerIDs.Clear();
+        for (int i; i < MAX_PRESENTS; i++) {
+            if (presentsLoaded[i] == false)
+                continue;
+            
+            presentsLoaded[i] = false;
+            presentsCount--;
+        }
+    }
+
+    return Plugin_Continue;
 }
 
 public Action OnRoundStart (Event event, const char[] name, bool dontBroadcast) {
@@ -138,7 +203,7 @@ int GetMonth()
 }
 
 void CreatePresent(float origin[3]) {
-    if (presentsCount > MAX_PRESENTS)
+    if (presentsCount >= MAX_PRESENTS)
         ThrowError("[SNT] Too many presents! You are over the current limit of %i", MAX_PRESENTS);
 
     int presentEnt = -1;
@@ -162,7 +227,7 @@ void CreatePresent(float origin[3]) {
                 DispatchKeyValue(presentEnt, "DefaultAnim", "spin");
             }
             default: {
-                DispatchKeyValue(presentEnt, "model", COOLER_MODEL);
+                DispatchKeyValue(presentEnt, "model", TOKEN_MODEL);
                 DispatchKeyValueFloat(presentEnt, "modelscale", 1.0);
             }
         }
@@ -301,6 +366,16 @@ public Action OnPresentTouched (int trigger, int client) {
             AcceptEntityInput(trigger, "Disable");
 
             if (IsValidClient(client)) {
+                if (IsValidEdict(gameruleEnt)) {
+                    int playerTeam = GetClientTeam(client);
+                    if (playerTeam == 2) {
+                        SetVariantInt(1);
+                        AcceptEntityInput(gameruleEnt, "AddRedTeamScore");
+                    } else if (playerTeam == 3) {
+                        SetVariantInt(1);
+                        AcceptEntityInput(gameruleEnt, "AddBlueTeamScore");
+                    }
+                }
                 RTDPerk clientReward = RTD2_Roll(client, ROLLFLAG_IGNORE_PERK_REPEATS | ROLLFLAG_IGNORE_PLAYER_REPEATS);
 
                 char perkGranted[RTD2_MAX_PERK_NAME_LENGTH];
@@ -316,8 +391,7 @@ public Action OnPresentTouched (int trigger, int client) {
     return Plugin_Continue;
 }
 
-public Action Timer_EnablePresent (Handle timer, any present)
-{
+public Action Timer_EnablePresent (Handle timer, any present) {
     int triggerIndex = presentIDs.FindValue(present);
     int trigger = triggerIDs.Get(triggerIndex);
 
@@ -353,8 +427,7 @@ public Action Timer_EnablePresent (Handle timer, any present)
     return Plugin_Continue;
 }
 
-public Action Timer_CreatePowerups (Handle timer, any data)
-{
+public Action Timer_CreatePowerups (Handle timer, any data) {
     char currentMap[256];
     GetCurrentMap(currentMap, sizeof(currentMap));
 
@@ -364,10 +437,14 @@ public Action Timer_CreatePowerups (Handle timer, any data)
     if (!FileExists(powerupOrigins))
         ThrowError("[SNT] %s doesn't exist!", powerupOrigins);
 
-
     KeyValues powerupOriginsKV = new KeyValues("Maps");
     if(powerupOriginsKV.ImportFromFile(powerupOrigins)) {
         if(powerupOriginsKV.JumpToKey(currentMap)) {
+            if (snt_map_type.IntValue != 2) {
+                ThrowError("[SNT] Map has entries in 'arena_maps.cfg' but not in 'asurf_cycle.txt'!");
+                return Plugin_Stop;
+            }
+
             powerupOriginsKV.GotoFirstSubKey();
             do {
                 char originString[48];
